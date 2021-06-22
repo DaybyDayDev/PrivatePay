@@ -29,6 +29,7 @@
 // THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "common/dns_utils.h"
+#include "common/command_line.h"
 #include "version.h"
 #include "common/command_line.h"
 #include "daemon/command_parser_executor.h"

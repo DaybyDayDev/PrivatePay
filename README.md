@@ -218,6 +218,16 @@ application.
 
 * The resulting executables can be found in `build/release/bin`
 
+* **Optional**: to build Windows binaries suitable for debugging on a 64-bit system, run:
+
+        make debug-static-win64
+
+* **Optional**: to build Windows binaries suitable for debugging on a 32-bit system, run:
+
+        make debug-static-win32
+
+* The resulting executables can be found in `build/debug/bin`
+
 ```
 # Create boost building directory
 mkdir ~/boost
