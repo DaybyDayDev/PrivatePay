@@ -894,6 +894,14 @@ cryptonote::account_public_address wallet2::get_subaddress(const cryptonote::sub
   return hwdev.get_subaddress(m_account.get_keys(), index);
 }
 //----------------------------------------------------------------------------------------------------
+boost::optional<cryptonote::subaddress_index> wallet2::get_subaddress_index(const cryptonote::account_public_address& address) const
+{
+  auto index = m_subaddresses.find(address.m_spend_public_key);
+  if (index == m_subaddresses.end())
+    return boost::none;
+  return index->second;
+}
+//----------------------------------------------------------------------------------------------------
 crypto::public_key wallet2::get_subaddress_spend_public_key(const cryptonote::subaddress_index& index) const
 {
   hw::device &hwdev = m_account.get_device();
@@ -1509,6 +1517,7 @@ void wallet2::process_new_transaction(const crypto::hash &txid, const cryptonote
       payment.m_block_height = height;
       payment.m_unlock_time  = tx.unlock_time;
       payment.m_timestamp    = ts;
+      payment.m_coinbase     = miner_tx;
       payment.m_subaddr_index = i.first;
       if (pool) {
         emplace_or_replace(m_unconfirmed_payments, payment_id, pool_payment_details{payment, double_spend_seen});
@@ -7203,6 +7212,7 @@ void wallet2::light_wallet_get_address_txs()
       payment.m_block_height = t.height;
       payment.m_unlock_time  = t.unlock_time;
       payment.m_timestamp = t.timestamp;
+      payment.m_coinbase = t.coinbase;
         
       if (t.mempool) {   
         if (std::find(unconfirmed_payments_txs.begin(), unconfirmed_payments_txs.end(), tx_hash) == unconfirmed_payments_txs.end()) {
@@ -7471,6 +7481,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
   // early out if we know we can't make it anyway
   // we could also check for being within FEE_PER_KB, but if the fee calculation
   // ever changes, this might be missed, so let this go through
+  const uint64_t min_fee = (fee_multiplier * fee_per_kb * estimate_tx_size(use_rct, 1, fake_outs_count, 2, extra.size(), bulletproof)) / 1024;
   uint64_t balance_subtotal = 0;
   uint64_t unlocked_balance_subtotal = 0;
   for (uint32_t index_minor : subaddr_indices)
@@ -7478,10 +7489,10 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
     balance_subtotal += balance_per_subaddr[index_minor];
     unlocked_balance_subtotal += unlocked_balance_per_subaddr[index_minor];
   }
-  THROW_WALLET_EXCEPTION_IF(needed_money > balance_subtotal, error::not_enough_money,
+  THROW_WALLET_EXCEPTION_IF(needed_money + min_fee > balance_subtotal, error::not_enough_money,
     balance_subtotal, needed_money, 0);
   // first check overall balance is enough, then unlocked one, so we throw distinct exceptions
-  THROW_WALLET_EXCEPTION_IF(needed_money > unlocked_balance_subtotal, error::not_enough_unlocked_money,
+  THROW_WALLET_EXCEPTION_IF(needed_money + min_fee > unlocked_balance_subtotal, error::not_enough_unlocked_money,
       unlocked_balance_subtotal, needed_money, 0);
 
   for (uint32_t i : subaddr_indices)
@@ -9632,6 +9643,17 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
   std::unordered_set<crypto::hash> spent_txids;   // For each spent key image, search for a tx in m_transfers that uses it as input.
   std::vector<size_t> swept_transfers;            // If such a spending tx wasn't found in m_transfers, this means the spending tx 
                                                   // was created by sweep_all, so we can't know the spent height and other detailed info.
+  std::unordered_map<crypto::key_image, crypto::hash> spent_key_images;
+
+  for (const transfer_details &td: m_transfers)
+  {
+    for (const cryptonote::txin_v& in : td.m_tx.vin)
+    {
+      if (in.type() == typeid(cryptonote::txin_to_key))
+        spent_key_images.insert(std::make_pair(boost::get<cryptonote::txin_to_key>(in).k_image, td.m_txid));
+    }
+  }
+
   for(size_t i = 0; i < signed_key_images.size(); ++i)
   {
     transfer_details &td = m_transfers[i];
@@ -9645,28 +9667,11 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
 
     if (i < daemon_resp.spent_status.size() && daemon_resp.spent_status[i] == COMMAND_RPC_IS_KEY_IMAGE_SPENT::SPENT_IN_BLOCKCHAIN)
     {
-      bool is_spent_tx_found = false;
-      for (auto it = m_transfers.rbegin(); &(*it) != &td; ++it)
-      {
-        bool is_spent_tx = false;
-        for(const cryptonote::txin_v& in : it->m_tx.vin)
-        {
-          if(in.type() == typeid(cryptonote::txin_to_key) && td.m_key_image == boost::get<cryptonote::txin_to_key>(in).k_image)
-          {
-            is_spent_tx = true;
-            break;
-          }
-        }
-        if (is_spent_tx)
-        {
-          is_spent_tx_found = true;
-          spent_txids.insert(it->m_txid);
-          break;
-        }
-      }
-
-      if (!is_spent_tx_found)
+      const std::unordered_map<crypto::key_image, crypto::hash>::const_iterator skii = spent_key_images.find(td.m_key_image);
+      if (skii == spent_key_images.end())
         swept_transfers.push_back(i);
+      else
+        spent_txids.insert(skii->second);
     }
   }
   MDEBUG("Total: " << print_money(spent) << " spent, " << print_money(unspent) << " unspent");

@@ -641,7 +641,7 @@ bool simple_wallet::print_seed(bool encrypted)
   epee::wipeable_string seed_pass;
   if (encrypted)
   {
-    auto pwd_container = password_prompter(tr("Enter optional seed encryption passphrase, empty to see raw seed"), true);
+    auto pwd_container = password_prompter(tr("Enter optional seed offset passphrase, empty to see raw seed"), true);
     if (std::cin.eof() || !pwd_container)
       return true;
     seed_pass = pwd_container->password();
@@ -1794,6 +1794,7 @@ bool simple_wallet::set_auto_refresh(const std::vector<std::string> &args/* = st
   if (pwd_container)
   {
     parse_bool_and_use(args[1], [&](bool auto_refresh) {
+      m_auto_refresh_enabled.store(false, std::memory_order_relaxed);
       m_wallet->auto_refresh(auto_refresh);
       m_idle_mutex.lock();
       m_auto_refresh_enabled.store(auto_refresh, std::memory_order_relaxed);
@@ -2296,7 +2297,7 @@ simple_wallet::simple_wallet()
                            tr("Check a signature proving that the owner of <address> holds at least this much, optionally with a challenge string <message>."));
   m_cmd_binder.set_handler("show_transfers",
                            boost::bind(&simple_wallet::show_transfers, this, _1),
-                           tr("show_transfers [in|out|pending|failed|pool] [index=<N1>[,<N2>,...]] [<min_height> [<max_height>]]"),
+                           tr("show_transfers [in|out|pending|failed|pool|coinbase] [index=<N1>[,<N2>,...]] [<min_height> [<max_height>]]"),
                            tr("Show the incoming/outgoing transfers within an optional height range."));
   m_cmd_binder.set_handler("unspent_outputs",
                            boost::bind(&simple_wallet::unspent_outputs, this, _1),
@@ -2773,7 +2774,7 @@ bool simple_wallet::init(const boost::program_options::variables_map& vm)
         }
       }
 
-      auto pwd_container = password_prompter(tr("Enter seed encryption passphrase, empty if none"), false);
+      auto pwd_container = password_prompter(tr("Enter seed offset passphrase, empty if none"), false);
       if (std::cin.eof() || !pwd_container)
         return false;
       epee::wipeable_string seed_pass = pwd_container->password();
@@ -3321,14 +3322,16 @@ bool simple_wallet::try_connect_to_daemon(bool silent, uint32_t* version)
  */
 std::string simple_wallet::get_mnemonic_language()
 {
-  std::vector<std::string> language_list;
+  std::vector<std::string> language_list_self, language_list_english;
+  const std::vector<std::string> &language_list = m_use_english_language_names ? language_list_english : language_list_self;
   std::string language_choice;
   int language_number = -1;
-  crypto::ElectrumWords::get_language_list(language_list, m_use_english_language_names);
+  crypto::ElectrumWords::get_language_list(language_list_self, false);
+  crypto::ElectrumWords::get_language_list(language_list_english, true);
   std::cout << tr("List of available languages for your wallet's seed:") << std::endl;
   std::cout << tr("If your display freezes, exit blind with ^C, then run again with --use-english-language-names") << std::endl;
   int ii;
-  std::vector<std::string>::iterator it;
+  std::vector<std::string>::const_iterator it;
   for (it = language_list.begin(), ii = 0; it != language_list.end(); it++, ii++)
   {
     std::cout << ii << " : " << *it << std::endl;
@@ -3352,7 +3355,7 @@ std::string simple_wallet::get_mnemonic_language()
       fail_msg_writer() << tr("invalid language choice entered. Please try again.\n");
     }
   }
-  return language_list[language_number];
+  return language_list_self[language_number];
 }
 //----------------------------------------------------------------------------------------------------
 boost::optional<tools::password_container> simple_wallet::get_and_verify_password() const
@@ -6023,12 +6026,13 @@ bool simple_wallet::show_transfers(const std::vector<std::string> &args_)
   bool pending = true;
   bool failed = true;
   bool pool = true;
+  bool coinbase = true;
   uint64_t min_height = 0;
   uint64_t max_height = (uint64_t)-1;
   boost::optional<uint32_t> subaddr_index;
 
   if(local_args.size() > 4) {
-    fail_msg_writer() << tr("usage: show_transfers [in|out|all|pending|failed] [index=<N1>[,<N2>,...]] [<min_height> [<max_height>]]");
+    fail_msg_writer() << tr("usage: show_transfers [in|out|all|pending|failed|coinbase] [index=<N1>[,<N2>,...]] [<min_height> [<max_height>]]");
     return true;
   }
 
@@ -6041,19 +6045,24 @@ bool simple_wallet::show_transfers(const std::vector<std::string> &args_)
       local_args.erase(local_args.begin());
     }
     else if (local_args[0] == "out" || local_args[0] == "outgoing") {
-      in = pool = false;
+   in = pool = coinbase = false;
       local_args.erase(local_args.begin());
     }
     else if (local_args[0] == "pending") {
-      in = out = failed = false;
+      in = out = failed = coinbase = false;
       local_args.erase(local_args.begin());
     }
     else if (local_args[0] == "failed") {
-      in = out = pending = pool = false;
+      in = out = pending = pool = coinbase = false;
       local_args.erase(local_args.begin());
     }
     else if (local_args[0] == "pool") {
-      in = out = pending = failed = false;
+      in = out = pending = failed = coinbase = false;
+      local_args.erase(local_args.begin());
+    }
+    else if (local_args[0] == "coinbase") {
+      in = out = pending = failed = pool = false;
+      coinbase = true;
       local_args.erase(local_args.begin());
     }
     else if (local_args[0] == "all" || local_args[0] == "both") {
@@ -6094,20 +6103,23 @@ bool simple_wallet::show_transfers(const std::vector<std::string> &args_)
     local_args.erase(local_args.begin());
   }
 
-  std::multimap<uint64_t, std::pair<bool,std::string>> output;
+  std::multimap<uint64_t, std::tuple<epee::console_colors, std::string, std::string>> output;
 
   PAUSE_READLINE();
 
-  if (in) {
+  if (in || coinbase) {
     std::list<std::pair<crypto::hash, tools::wallet2::payment_details>> payments;
     m_wallet->get_payments(payments, min_height, max_height, m_current_subaddress_account, subaddr_indices);
     for (std::list<std::pair<crypto::hash, tools::wallet2::payment_details>>::const_iterator i = payments.begin(); i != payments.end(); ++i) {
       const tools::wallet2::payment_details &pd = i->second;
+      if (!pd.m_coinbase && !in)
+        continue;
       std::string payment_id = string_tools::pod_to_hex(i->first);
       if (payment_id.substr(16).find_first_not_of('0') == std::string::npos)
         payment_id = payment_id.substr(0,16);
       std::string note = m_wallet->get_tx_note(pd.m_tx_hash);
-      output.insert(std::make_pair(pd.m_block_height, std::make_pair(true, (boost::format("%25.25s %20.20s %s %s %d %s %s") % get_human_readable_timestamp(pd.m_timestamp) % print_money(pd.m_amount) % string_tools::pod_to_hex(pd.m_tx_hash) % payment_id % pd.m_subaddr_index.minor % "-" % note).str())));
+      const std::string type = pd.m_coinbase ? tr("block") : tr("in");
+      output.insert(std::make_pair(pd.m_block_height, std::make_tuple(epee::console_color_green, type, (boost::format("%25.25s %20.20s %s %s %d %s %s") % get_human_readable_timestamp(pd.m_timestamp) % print_money(pd.m_amount) % string_tools::pod_to_hex(pd.m_tx_hash) % payment_id % pd.m_subaddr_index.minor % "-" % note).str())));
     }
   }
 
@@ -6140,15 +6152,15 @@ bool simple_wallet::show_transfers(const std::vector<std::string> &args_)
       if (payment_id.substr(16).find_first_not_of('0') == std::string::npos)
         payment_id = payment_id.substr(0,16);
       std::string note = m_wallet->get_tx_note(i->first);
-      output.insert(std::make_pair(pd.m_block_height, std::make_pair(false, (boost::format("%25.25s %20.20s %s %s %14.14s %s %s - %s") % get_human_readable_timestamp(pd.m_timestamp) % print_money(pd.m_amount_in - change - fee) % string_tools::pod_to_hex(i->first) % payment_id % print_money(fee) % dests % print_subaddr_indices(pd.m_subaddr_indices) % note).str())));
+      output.insert(std::make_pair(pd.m_block_height, std::make_tuple(epee::console_color_magenta, tr("out"), (boost::format("%25.25s %20.20s %s %s %14.14s %s %s - %s") % get_human_readable_timestamp(pd.m_timestamp) % print_money(pd.m_amount_in - change - fee) % string_tools::pod_to_hex(i->first) % payment_id % print_money(fee) % dests % print_subaddr_indices(pd.m_subaddr_indices) % note).str())));
     }
   }
 
   // print in and out sorted by height
-  for (std::map<uint64_t, std::pair<bool, std::string>>::const_iterator i = output.begin(); i != output.end(); ++i) {
-    message_writer(i->second.first ? console_color_green : console_color_magenta, false) <<
+  for (std::multimap<uint64_t, std::tuple<epee::console_colors, std::string, std::string>>::const_iterator i = output.begin(); i != output.end(); ++i) {
+    message_writer(std::get<0>(i->second), false) <<
       boost::format("%8.8llu %6.6s %s") %
-      ((unsigned long long)i->first) % (i->second.first ? tr("in") : tr("out")) % i->second.second;
+      ((unsigned long long)i->first) % std::get<1>(i->second) % std::get<2>(i->second);
   }
 
   if (pool) {
@@ -6207,7 +6219,7 @@ bool simple_wallet::unspent_outputs(const std::vector<std::string> &args_)
   auto local_args = args_;
 
   std::set<uint32_t> subaddr_indices;
-  if (local_args.size() > 0 && local_args[0].substr(0, 6) != "index=")
+  if (local_args.size() > 0 && local_args[0].substr(0, 6) == "index=")
   {
     if (!parse_subaddress_indices(local_args[0], subaddr_indices))
       return true;

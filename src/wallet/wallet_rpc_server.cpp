@@ -257,7 +257,7 @@ namespace tools
     entry.unlock_time = pd.m_unlock_time;
     entry.fee = pd.m_fee;
     entry.note = m_wallet->get_tx_note(pd.m_tx_hash);
-    entry.type = "in";
+    entry.type = pd.m_coinbase ? "block" : "in";
     entry.subaddr_index = pd.m_subaddr_index;
     entry.address = m_wallet->get_subaddress_as_str(pd.m_subaddr_index);
   }
@@ -338,14 +338,20 @@ namespace tools
       std::map<uint32_t, uint64_t> unlocked_balance_per_subaddress = m_wallet->unlocked_balance_per_subaddress(req.account_index);
       std::vector<tools::wallet2::transfer_details> transfers;
       m_wallet->get_transfers(transfers);
-      for (const auto& i : balance_per_subaddress)
+      std::set<uint32_t> address_indices = req.address_indices;
+      if (address_indices.empty())
+      {
+        for (const auto& i : balance_per_subaddress)
+          address_indices.insert(i.first);
+      }
+      for (uint32_t i : address_indices)
       {
         wallet_rpc::COMMAND_RPC_GET_BALANCE::per_subaddress_info info;
-        info.address_index = i.first;
+        info.address_index = i;
         cryptonote::subaddress_index index = {req.account_index, info.address_index};
         info.address = m_wallet->get_subaddress_as_str(index);
-        info.balance = i.second;
-        info.unlocked_balance = unlocked_balance_per_subaddress[i.first];
+        info.balance = balance_per_subaddress[i];
+        info.unlocked_balance = unlocked_balance_per_subaddress[i];
         info.label = m_wallet->get_subaddress_label(index);
         info.num_unspent_outputs = std::count_if(transfers.begin(), transfers.end(), [&](const tools::wallet2::transfer_details& td) { return !td.m_spent && td.m_subaddr_index == index; });
         res.per_subaddress.push_back(info);
@@ -396,6 +402,27 @@ namespace tools
       handle_rpc_exception(std::current_exception(), er, WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR);
       return false;
     }
+    return true;
+  }
+  //------------------------------------------------------------------------------------------------------------------------------
+  bool wallet_rpc_server::on_getaddress_index(const wallet_rpc::COMMAND_RPC_GET_ADDRESS_INDEX::request& req, wallet_rpc::COMMAND_RPC_GET_ADDRESS_INDEX::response& res, epee::json_rpc::error& er)
+  {
+    if (!m_wallet) return not_open(er);
+    cryptonote::address_parse_info info;
+    if(!get_account_address_from_str(info, m_wallet->nettype(), req.address))
+    {
+      er.code = WALLET_RPC_ERROR_CODE_WRONG_ADDRESS;
+      er.message = "Invalid address";
+      return false;
+    }
+    auto index = m_wallet->get_subaddress_index(info.address);
+    if (!index)
+    {
+      er.code = WALLET_RPC_ERROR_CODE_WRONG_ADDRESS;
+      er.message = "Address doesn't belong to the wallet";
+      return false;
+    }
+    res.index = *index;
     return true;
   }
   //------------------------------------------------------------------------------------------------------------------------------
@@ -1213,7 +1240,39 @@ namespace tools
         }
       }
 
-      res.integrated_address = m_wallet->get_integrated_address_as_str(payment_id);
+      if (req.standard_address.empty())
+      {
+        res.integrated_address = m_wallet->get_integrated_address_as_str(payment_id);
+      }
+      else
+      {
+        cryptonote::address_parse_info info;
+        if(!get_account_address_from_str(info, m_wallet->nettype(), req.standard_address))
+        {
+          er.code = WALLET_RPC_ERROR_CODE_WRONG_ADDRESS;
+          er.message = "Invalid address";
+          return false;
+        }
+        if (info.is_subaddress)
+        {
+          er.code = WALLET_RPC_ERROR_CODE_WRONG_ADDRESS;
+          er.message = "Subaddress shouldn't be used";
+          return false;
+        }
+        if (info.has_payment_id)
+        {
+          er.code = WALLET_RPC_ERROR_CODE_WRONG_ADDRESS;
+          er.message = "Already integrated address";
+          return false;
+        }
+        if (req.payment_id.empty())
+        {
+          er.code = WALLET_RPC_ERROR_CODE_WRONG_PAYMENT_ID;
+          er.message = "Payment ID shouldn't be left unspecified";
+          return false;
+        }
+        res.integrated_address = get_account_integrated_address_as_str(m_wallet->nettype(), info.address, payment_id);
+      }
       res.payment_id = epee::string_tools::pod_to_hex(payment_id);
       return true;
     }
