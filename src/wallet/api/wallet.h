@@ -183,7 +183,10 @@ public:
     virtual void segregatePreForkOutputs(bool segregate);
     virtual void segregationHeight(uint64_t height);
     virtual void keyReuseMitigation2(bool mitigation);
-
+    virtual bool lockKeysFile() override;
+    virtual bool unlockKeysFile() override;
+    virtual bool isKeysFileLocked() override;
+	
 private:
     void clearStatus() const;
     void setStatusError(const std::string& message) const;
