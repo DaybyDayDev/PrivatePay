@@ -45,6 +45,7 @@
 #include <boost/algorithm/string.hpp>
 #include "crypto/crypto.h"  // for declaration of crypto::secret_key
 #include <fstream>
+#include "common/int-util.h"
 #include "mnemonics/electrum-words.h"
 #include <stdexcept>
 #include <boost/filesystem.hpp>
