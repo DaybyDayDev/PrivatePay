@@ -294,8 +294,8 @@ Build privatepay: `env DEVELOPER_LOCAL_TOOLS=1 BOOST_ROOT=/usr/local make releas
 
 ### On Linux for Android (using docker):
 
-        # Build image (select android64.Dockerfile for aarch64)
-        cd utils/build_scripts/ && docker build -f android32.Dockerfile -t privatepay-android .
+        # Build image
+        docker build -f utils/build_scripts/android32.Dockerfile -t monero-android .
         # Create container
         docker create -it --name privatepay-android privatepay-android bash
         # Get binaries

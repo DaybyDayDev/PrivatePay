@@ -442,11 +442,7 @@ add_definition_if_function_found(strptime HAVE_STRPTIME)
 add_definitions(-DAUTO_INITIALIZE_EASYLOGGINGPP)
 
 # Generate header for embedded translations
-include(ExternalProject)
-ExternalProject_Add(generate_translations_header
-  SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/translations"
-  BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/translations"
-  INSTALL_COMMAND cmake -E echo "")
+add_subdirectory(translations)
 include_directories("${CMAKE_CURRENT_BINARY_DIR}/translations")
 
 add_subdirectory(external)
@@ -828,7 +824,7 @@ endif()
 include_directories(SYSTEM ${Boost_INCLUDE_DIRS})
 if(MINGW)
   set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Wa,-mbig-obj")
-  set(EXTRA_LIBRARIES mswsock;ws2_32;iphlpapi)
+  set(EXTRA_LIBRARIES mswsock;ws2_32;iphlpapi;crypt32)
     if(DEPENDS)
     set(ICU_LIBRARIES ${Boost_LOCALE_LIBRARY} sicuio sicuin sicuuc sicudt sicutu iconv)
   else()
@@ -865,6 +861,7 @@ endif()
 
 if(ANDROID)
   set(ATOMIC libatomic.a)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-error=user-defined-warnings")
 endif()
 if(CMAKE_C_COMPILER_ID STREQUAL "Clang" AND ARCH_WIDTH EQUAL "32" AND NOT IOS AND NOT FREEBSD)
   find_library(ATOMIC atomic)
