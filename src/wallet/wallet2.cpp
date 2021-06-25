@@ -1702,35 +1702,8 @@ void wallet2::pull_blocks(uint64_t start_height, uint64_t &blocks_start_height, 
   cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::request req = AUTO_VAL_INIT(req);
   cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::response res = AUTO_VAL_INIT(res);
   req.block_ids = short_chain_history;
-
-  uint32_t rpc_version;
-  boost::optional<std::string> result = m_node_rpc_proxy.get_rpc_version(rpc_version);
-  // no error
-  if (!!result)
-  {
-    // empty string -> not connection
-    THROW_WALLET_EXCEPTION_IF(result->empty(), tools::error::no_connection_to_daemon, "getversion");
-    THROW_WALLET_EXCEPTION_IF(*result == CORE_RPC_STATUS_BUSY, tools::error::daemon_busy, "getversion");
-    if (*result != CORE_RPC_STATUS_OK)
-    {
-      MDEBUG("Cannot determine daemon RPC version, not asking for pruned blocks");
-      req.prune = false; // old daemon
-    }
-  }
-  else
-  {
-    if (rpc_version >= MAKE_CORE_RPC_VERSION(1, 7))
-    {
-      MDEBUG("Daemon is recent enough, asking for pruned blocks");
-      req.prune = true;
-    }
-    else
-    {
-      MDEBUG("Daemon is too old, not asking for pruned blocks");
-      req.prune = false;
-    }
-  }
-
+  
+  req.prune = true;
   req.start_height = start_height;
   m_daemon_rpc_mutex.lock();
   bool r = net_utils::invoke_http_bin("/getblocks.bin", req, res, m_http_client, rpc_timeout);
@@ -3049,7 +3022,8 @@ void wallet2::generate(const std::string& wallet_, const epee::wipeable_string& 
   for (const auto &msk: multisig_keys)
     sc_add(skey.bytes, skey.bytes, rct::sk2rct(msk).bytes);
   THROW_WALLET_EXCEPTION_IF(!(rct::rct2sk(skey) == spend_secret_key), error::invalid_multisig_seed);
-
+  memwipe(&skey, sizeof(rct::key));
+  
   m_account.make_multisig(view_secret_key, spend_secret_key, spend_public_key, multisig_keys);
   m_account.finalize_multisig(spend_public_key);
 
@@ -3381,7 +3355,8 @@ std::string wallet2::make_multisig(const epee::wipeable_string &password,
   MINFO("Creating multisig address...");
   CHECK_AND_ASSERT_THROW_MES(m_account.make_multisig(view_skey, rct::rct2sk(spend_skey), rct::rct2pk(spend_pkey), multisig_keys),
       "Failed to create multisig wallet due to bad keys");
-
+  memwipe(&spend_skey, sizeof(rct::key));
+  
   m_account_public_address = m_account.get_keys().m_account_address;
   m_watch_only = false;
   m_multisig = true;
